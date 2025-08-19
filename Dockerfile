@@ -42,4 +42,4 @@ COPY . .
 RUN playwright install chromium
 
 # Define the command to run the application
-CMD ["python", "main.py"]
+CMD ["python", "mgbot_ii15.py"]
