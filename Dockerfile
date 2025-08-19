@@ -17,7 +17,12 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Установка Playwright + Chromium
-RUN playwright install --with-deps chromium
+RUN apt-get update && apt-get install -y \
+    libgbm1 \
+    libasound2 \
+    fonts-unifont \
+    fonts-ubuntu-font-family-console \
+    && playwright install chromium
 
 # Копируем весь проект
 COPY . .
