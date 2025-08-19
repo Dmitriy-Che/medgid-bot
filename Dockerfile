@@ -1,9 +1,10 @@
 FROM python:3.10-slim
 
-# Устанавливаем зависимости для playwright
+# Устанавливаем зависимости для Playwright
 RUN apt-get update && apt-get install -y \
     libglib2.0-0 \
-    libdbus-1-3 \
+    libnss3 \
+    libgconf-2-4 \
     libatk1.0-0 \
     libatk-bridge2.0-0 \
     libcups2 \
@@ -15,17 +16,20 @@ RUN apt-get update && apt-get install -y \
     libxrandr2 \
     libpango-1.0-0 \
     libcairo2 \
-    wget gnupg && \
-    rm -rf /var/lib/apt/lists/*
+    wget \
+    && rm -rf /var/lib/apt/lists/*
 
-# Устанавливаем зависимости проекта
 WORKDIR /app
+
+# Копируем зависимости
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Устанавливаем браузеры playwright
+# Устанавливаем Playwright + Chromium
+RUN pip install playwright
 RUN playwright install --with-deps chromium
 
+# Копируем бота
 COPY . .
 
 CMD ["python", "mgbot_ii15.py"]
