@@ -1,7 +1,7 @@
 # Используем Python 3.10 slim-образ
 FROM python:3.10-slim
 
-# Устанавливаем системные зависимости для Playwright
+# Устанавливаем системные зависимости для Playwright и Chromium
 RUN apt-get update && apt-get install -y \
     libglib2.0-0 \
     libnss3 \
@@ -20,6 +20,8 @@ RUN apt-get update && apt-get install -y \
     curl \
     unzip \
     fonts-liberation \
+    fonts-unifont \
+    fonts-ubuntu \
     libasound2 \
     libxshmfence1 \
     libdrm2 \
@@ -30,9 +32,9 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Ставим playwright и chromium
+# Ставим playwright и chromium (без --with-deps, так как deps мы сами доставили)
 RUN pip install playwright
-RUN playwright install --with-deps chromium
+RUN playwright install chromium
 
 # Копируем все файлы бота
 COPY . .
