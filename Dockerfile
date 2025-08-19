@@ -1,10 +1,10 @@
+# Используем Python 3.10 slim-образ
 FROM python:3.10-slim
 
-# Устанавливаем зависимости для Playwright
+# Устанавливаем системные зависимости для Playwright
 RUN apt-get update && apt-get install -y \
     libglib2.0-0 \
     libnss3 \
-    libgconf-2-4 \
     libatk1.0-0 \
     libatk-bridge2.0-0 \
     libcups2 \
@@ -17,19 +17,25 @@ RUN apt-get update && apt-get install -y \
     libpango-1.0-0 \
     libcairo2 \
     wget \
+    curl \
+    unzip \
+    fonts-liberation \
+    libasound2 \
+    libxshmfence1 \
+    libdrm2 \
     && rm -rf /var/lib/apt/lists/*
 
+# Устанавливаем зависимости проекта
 WORKDIR /app
-
-# Копируем зависимости
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Устанавливаем Playwright + Chromium
+# Ставим playwright и chromium
 RUN pip install playwright
 RUN playwright install --with-deps chromium
 
-# Копируем бота
+# Копируем все файлы бота
 COPY . .
 
+# Запускаем бота
 CMD ["python", "mgbot_ii15.py"]
