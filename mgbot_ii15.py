@@ -189,6 +189,8 @@ async def scrape_with_playwright(specialization_slug, chat_id, max_count=MAX_DOC
     url = f"{base_url}/domodedovo/{specialization_slug}/"
     doctors = []
     progress_msg = None
+    browser = None
+    context = None
 
     try:
         progress_msg = await bot.send_message(chat_id, "🔍 Поиск врачей... 0%")
@@ -197,7 +199,14 @@ async def scrape_with_playwright(specialization_slug, chat_id, max_count=MAX_DOC
             browser = await p.chromium.launch(
                 headless=True,
                 args=[
-                    "--no-sandbox", "--single-process", "--disable-gpu", "--disable-dev-shm-usage"
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-accelerated-2d-canvas",
+                    "--no-first-run",
+                    "--no-zygote",
+                    "--disable-gpu",
+                    "--single-process"
                 ]
             )
             await update_progress(progress_msg, 20)
@@ -215,6 +224,7 @@ async def scrape_with_playwright(specialization_slug, chat_id, max_count=MAX_DOC
             await update_progress(progress_msg, 40)
             await page.goto(url, timeout=30000, wait_until="domcontentloaded")
             await update_progress(progress_msg, 50)
+            
             try:
                 await page.wait_for_selector("div.b-doctor-card", timeout=10000)
                 await update_progress(progress_msg, 60)
@@ -223,8 +233,8 @@ async def scrape_with_playwright(specialization_slug, chat_id, max_count=MAX_DOC
                 no_doctors_found = await page.locator("div.b-empty-content_text").is_visible()
                 if no_doctors_found:
                     logger.info(f"На странице {url} нет врачей.")
-                    await browser.close()
-                    await progress_msg.delete()
+                    if progress_msg:
+                        await progress_msg.delete()
                     return []
                 else:
                     raise Exception("Таймаут ожидания селектора b-doctor-card и нет сообщения о пустой странице.")
@@ -234,16 +244,18 @@ async def scrape_with_playwright(specialization_slug, chat_id, max_count=MAX_DOC
             await update_progress(progress_msg, 80)
             soup = BeautifulSoup(content, "html.parser")
             cards = soup.select("div.b-doctor-card")[:max_count]
+            
             if not cards:
                 logger.warning(f"Парсер не нашел карточек врачей для {specialization_slug} даже после ожидания селектора.")
-                await browser.close()
-                await progress_msg.delete()
+                if progress_msg:
+                    await progress_msg.delete()
                 return []
 
             for i, card in enumerate(cards):
                 try:
                     progress = 80 + int((i + 1) / len(cards) * 15)
                     await update_progress(progress_msg, progress)
+                    
                     name = card.select_one("span.b-doctor-card__name-surname")
                     rating_el = card.select_one("div.b-stars-rate__progress")
                     rating = (
@@ -279,11 +291,12 @@ async def scrape_with_playwright(specialization_slug, chat_id, max_count=MAX_DOC
 
             doctors.sort(key=lambda x: float(x['rating']), reverse=True)
             await update_progress(progress_msg, 95)
-            await browser.close()
             await update_progress(progress_msg, 100)
             await asyncio.sleep(1)
-            await progress_msg.delete()
+            if progress_msg:
+                await progress_msg.delete()
             return doctors
+            
     except Exception as e:
         logger.error(f"Глобальная ошибка парсинга: {e}")
         if progress_msg:
@@ -292,6 +305,15 @@ async def scrape_with_playwright(specialization_slug, chat_id, max_count=MAX_DOC
             except:
                 pass
         return []
+    finally:
+        # Гарантированно закрываем браузер и контекст
+        try:
+            if context:
+                await context.close()
+            if browser:
+                await browser.close()
+        except Exception as e:
+            logger.error(f"Ошибка при закрытии браузера/контекста: {e}")
 
 # ------------------ FSM ------------------
 class Form(StatesGroup):
