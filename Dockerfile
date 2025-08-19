@@ -31,8 +31,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Ставим Playwright и Chromium
-RUN playwright install --with-deps chromium
+# Ставим Playwright и Chromium (без --with-deps!)
+RUN playwright install chromium
 
 # Копируем весь проект
 COPY . .
