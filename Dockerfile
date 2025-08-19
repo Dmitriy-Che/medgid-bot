@@ -1,13 +1,10 @@
-# Use the official Python base image
-FROM python:3.10-slim
+FROM python:3.11-slim
 
-# Set the working directory in the container
-WORKDIR /app
-
-# Install system dependencies for Playwright and Chromium
+# Устанавливаем зависимости для Playwright
 RUN apt-get update && apt-get install -y \
     libglib2.0-0 \
     libnss3 \
+    libdbus-1-3 \
     libatk1.0-0 \
     libatk-bridge2.0-0 \
     libcups2 \
@@ -20,26 +17,18 @@ RUN apt-get update && apt-get install -y \
     libpango-1.0-0 \
     libcairo2 \
     wget \
-    curl \
-    unzip \
-    fonts-liberation \
-    fonts-unifont \
-    libasound2 \
-    libxshmfence1 \
-    libdrm2 \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy the requirements file into the container
+# Устанавливаем зависимости Python
+WORKDIR /app
 COPY requirements.txt .
-
-# Install Python dependencies from the requirements file
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the application code into the container
+# Устанавливаем Playwright + браузеры
+RUN pip install playwright && playwright install --with-deps chromium
+
+# Копируем код бота
 COPY . .
 
-# Install the browser for Playwright
-RUN playwright install chromium
-
-# Define the command to run the application
-CMD ["python", "mgbot_ii15.py"]
+# Запуск бота
+CMD ["python", "bot.py"]
