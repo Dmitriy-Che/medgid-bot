@@ -165,163 +165,164 @@ async def scrape_with_playwright(specialization_slug, chat_id, max_count=MAX_DOC
     url = f"{base_url}/domodedovo/{specialization_slug}/"
     doctors = []
     progress_msg = None
-    browser = None
-    context = None
-    page = None
 
     try:
         progress_msg = await bot.send_message(chat_id, "🔍 Поиск врачей... 0%")
-        
-        playwright = await async_playwright().start()
         await update_progress(progress_msg, 10)
-        
-        browser = await playwright.chromium.launch(
-            headless=True,
-            timeout=60000,
-            args=[
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--single-process"
-            ]
-        )
+
+        # Используем aiohttp для простого HTTP запроса
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'ru-RU,ru;q=0.8,en-US;q=0.5,en;q=0.3',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+        }
+
         await update_progress(progress_msg, 20)
-        
-        context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            viewport={'width': 1920, 'height': 1080},
-            java_script_enabled=True
-        )
-        await update_progress(progress_msg, 30)
-        
-        page = await context.new_page()
-        await update_progress(progress_msg, 40)
-        
-        # Блокируем ресурсы
-        await page.route("**/*.{png,jpg,jpeg,webp,gif,svg}", lambda route: route.abort())
-        await page.route("**/*.css", lambda route: route.abort())
-        
-        await update_progress(progress_msg, 50)
-        await page.goto(url, timeout=60000, wait_until="domcontentloaded")
+
+        async with aiohttp.ClientSession() as session:
+            try:
+                async with session.get(url, headers=headers, timeout=30) as response:
+                    if response.status != 200:
+                        await update_progress(progress_msg, 100)
+                        await progress_msg.edit_text("⚠️ Не удалось загрузить страницу с врачами")
+                        return []
+
+                    html = await response.text()
+                    await update_progress(progress_msg, 40)
+
+            except asyncio.TimeoutError:
+                await update_progress(progress_msg, 100)
+                await progress_msg.edit_text("⏰ Время загрузки истекло")
+                return []
+            except Exception as e:
+                logger.error(f"Ошибка HTTP запроса: {e}")
+                await update_progress(progress_msg, 100)
+                await progress_msg.edit_text("⚠️ Ошибка подключения")
+                return []
+
         await update_progress(progress_msg, 60)
+
+        # Парсим HTML с BeautifulSoup
+        soup = BeautifulSoup(html, 'html.parser')
+        await update_progress(progress_msg, 70)
         
-        try:
-            await page.wait_for_selector("div.b-doctor-card", timeout=15000)
-            await update_progress(progress_msg, 70)
-        except Exception as e:
-            logger.warning(f"Не найдены карточки врачей: {e}")
-            await update_progress(progress_msg, 100)
-            await progress_msg.delete()
-            return []
-        
-        content = await page.content()
-        await update_progress(progress_msg, 80)
-        
-        soup = BeautifulSoup(content, "html.parser")
-        cards = soup.select("div.b-doctor-card")[:max_count]
+        # Ищем карточки врачей
+        cards = soup.select('div.b-doctor-card')
         
         if not cards:
-            logger.warning("Карточки врачей не найдены")
             await update_progress(progress_msg, 100)
-            await progress_msg.delete()
+            await progress_msg.edit_text("😕 Врачи не найдены")
             return []
 
-        for i, card in enumerate(cards):
+        await update_progress(progress_msg, 80)
+
+        for i, card in enumerate(cards[:max_count]):
             try:
-                progress = 80 + int((i + 1) / len(cards) * 15)
+                progress = 80 + int((i + 1) / min(len(cards), max_count) * 15)
                 await update_progress(progress_msg, progress)
-                
-                name = card.select_one("span.b-doctor-card__name-surname")
-                rating_el = card.select_one("div.b-stars-rate__progress")
+                await asyncio.sleep(0.1)  # Небольшая задержка
+
+                # Извлекаем данные
+                name_elem = card.select_one('span.b-doctor-card__name-surname')
+                name = name_elem.get_text(strip=True) if name_elem else "Не указано"
+
+                rating_elem = card.select_one('div.b-stars-rate__progress')
                 rating = "0.0"
-                if rating_el and 'style' in rating_el.attrs:
+                if rating_elem and rating_elem.get('style'):
                     try:
-                        width_str = rating_el['style'].replace('width:', '').replace('em', '').strip()
+                        width_str = rating_elem['style'].replace('width:', '').replace('em', '').strip()
                         rating = f"{round(float(width_str) / 1.28, 1)}"
                     except:
                         pass
-                
-                photo = card.select_one("img.b-profile-card__img")
-                experience = card.select_one("div.b-doctor-card__experience .ui-text_subtitle-1")
-                
+
+                photo_elem = card.select_one('img.b-profile-card__img')
+                photo = None
+                if photo_elem and photo_elem.get('src'):
+                    photo_url = photo_elem['src']
+                    if photo_url.startswith('http'):
+                        photo = photo_url
+                    else:
+                        photo = base_url + photo_url
+
+                experience_elem = card.select_one('div.b-doctor-card__experience .ui-text_subtitle-1')
+                experience = experience_elem.get_text(strip=True) if experience_elem else "Не указан"
+
+                # Клиника и адрес
+                clinic_container = card.select_one('div.b-doctor-card__lpu-select')
                 clinic = "Не указана"
                 address = "Не указан"
-                clinic_container = card.select_one("div.b-doctor-card__lpu-select")
                 if clinic_container:
-                    clinic_el = clinic_container.select_one("span.b-select__trigger-main-text")
-                    address_el = clinic_container.select_one("span.b-select__trigger-adit-text")
-                    if clinic_el:
-                        clinic = clinic_el.get_text(strip=True)
-                    if address_el:
-                        address = address_el.get_text(strip=True)
-                
-                price = card.select_one(".b-doctor-card__price .ui-text_subtitle-1") or \
-                        card.select_one(".b-doctor-card__tabs-wrapper_club fieldset .ui-text_subtitle-1")
-                
-                phone = card.select_one(".b-doctor-card__lpu-phone-container .b-doctor-card__lpu-phone") or \
-                       card.select_one(".b-doctor-card__phone .ui-text_subtitle-1")
-                
-                phone_text = phone.get_text(strip=True) if phone else "Не указан"
-                phone_clean = clean_phone(phone_text)
+                    clinic_elem = clinic_container.select_one('span.b-select__trigger-main-text')
+                    address_elem = clinic_container.select_one('span.b-select__trigger-adit-text')
+                    clinic = clinic_elem.get_text(strip=True) if clinic_elem else "Не указана"
+                    address = address_elem.get_text(strip=True) if address_elem else "Не указан"
 
-                doctor_data = {
-                    "name": name.get_text(strip=True) if name else "Не указано",
-                    "rating": rating,
-                    "photo": base_url + photo["src"] if photo and photo.has_attr("src") else None,
-                    "experience": experience.get_text(strip=True) if experience else "Не указан",
-                    "clinic": clinic,
-                    "address": address,
-                    "price": price.get_text(strip=True).replace(u'\xa0', ' ') if price else "Не указана",
-                    "phone": phone_text,
-                    "phone_clean": phone_clean
-                }
-                doctors.append(doctor_data)
-                
+                # Цена
+                price = "Не указана"
+                price_selectors = [
+                    '.b-doctor-card__price .ui-text_subtitle-1',
+                    '.b-doctor-card__tabs-wrapper_club fieldset .ui-text_subtitle-1',
+                    '.b-doctor-card__price-value'
+                ]
+                for selector in price_selectors:
+                    price_elem = card.select_one(selector)
+                    if price_elem and price_elem.get_text(strip=True):
+                        price = price_elem.get_text(strip=True).replace(u'\xa0', ' ')
+                        break
+
+                # Телефон
+                phone = "Не указан"
+                phone_clean = None
+                phone_selectors = [
+                    '.b-doctor-card__lpu-phone-container .b-doctor-card__lpu-phone',
+                    '.b-doctor-card__phone .ui-text_subtitle-1',
+                    '.b-doctor-card__contact-phone'
+                ]
+                for selector in phone_selectors:
+                    phone_elem = card.select_one(selector)
+                    if phone_elem and phone_elem.get_text(strip=True):
+                        phone = phone_elem.get_text(strip=True)
+                        phone_clean = clean_phone(phone)
+                        break
+
+                doctors.append({
+                    'name': name,
+                    'rating': rating,
+                    'photo': photo,
+                    'experience': experience,
+                    'clinic': clinic,
+                    'address': address,
+                    'price': price,
+                    'phone': phone,
+                    'phone_clean': phone_clean
+                })
+
             except Exception as e:
-                logger.error(f"Ошибка парсинга карточки: {e}")
+                logger.error(f"Ошибка парсинга карточки {i}: {e}")
                 continue
 
+        await update_progress(progress_msg, 95)
         doctors.sort(key=lambda x: float(x['rating']), reverse=True)
         await update_progress(progress_msg, 100)
         await asyncio.sleep(1)
+        
         if progress_msg:
             await progress_msg.delete()
-        
-        logger.info(f"Успешно найдено {len(doctors)} врачей для {specialization_slug}")
+
+        logger.info(f"Найдено {len(doctors)} врачей для {specialization_slug}")
         return doctors
-        
+
     except Exception as e:
-        logger.error(f"Ошибка парсинга: {e}")
+        logger.error(f"Общая ошибка парсинга: {e}")
         if progress_msg:
             try:
-                await progress_msg.edit_text("⚠️ Ошибка при поиске врачей. Попробуйте позже.")
+                await progress_msg.edit_text("⚠️ Ошибка при поиске врачей")
             except:
                 pass
         return []
-    finally:
-        # Закрываем в правильном порядке
-        try:
-            if page:
-                await page.close()
-        except:
-            pass
-        try:
-            if context:
-                await context.close()
-        except:
-            pass
-        try:
-            if browser:
-                await browser.close()
-        except:
-            pass
-        try:
-            if 'playwright' in locals():
-                await playwright.stop()
-        except:
-            pass
-
 # ------------------ FSM ------------------
 class Form(StatesGroup):
     waiting_for_symptoms = State()
