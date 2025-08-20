@@ -13,7 +13,6 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import KeyboardButton
 from aiogram.utils.keyboard import ReplyKeyboardBuilder
-from playwright.async_api import async_playwright
 from bs4 import BeautifulSoup
 from aiogram.client.default import DefaultBotProperties
 from dotenv import load_dotenv
