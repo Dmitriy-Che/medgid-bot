@@ -176,6 +176,214 @@ async def scrape_with_playwright(specialization_slug, chat_id, max_count=MAX_DOC
         playwright = await async_playwright().start()
         await update_progress(progress_msg, 10)
         
+        # Увеличиваем таймаут запуска браузера
+        browser = await playwright.chromium.launch(
+            headless=True,
+            timeout=60000,  # 60 секунд на запуск браузера
+            args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--single-process",
+                "--disable-blink-features=AutomationControlled",
+                "--disable-web-security"
+            ]
+        )
+        await update_progress(progress_msg, 20)
+        
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            viewport={'width': 1920, 'height': 1080},
+            java_script_enabled=True,
+            bypass_csp=True
+        )
+        await update_progress(progress_msg, 30)
+        
+        # Увеличиваем таймаут создания страницы
+        page = await context.new_page()
+        await update_progress(progress_msg, 40)
+        
+        # Блокируем только тяжелые ресурсы
+        await page.route("**/*.{png,jpg,jpeg,webp,gif,svg}", lambda route: route.abort())
+        await page.route("**/*.mp4", lambda route: route.abort())
+        await page.route("**/*.mp3", lambda route: route.abort())
+        
+        await update_progress(progress_msg, 50)
+        
+        # Увеличиваем таймаут загрузки страницы
+        await page.goto(url, timeout=120000, wait_until="networkidle")  # 120 секунд, ждем завершения сети
+        await update_progress(progress_msg, 60)
+        
+        try:
+            # Увеличиваем таймаут ожидания элементов
+            await page.wait_for_selector("div.b-doctor-card", timeout=30000, state="attached")  # 30 секунд
+            await update_progress(progress_msg, 70)
+        except Exception as e:
+            logger.warning(f"Не найдены карточки врачей для {specialization_slug}: {e}")
+            # Проверяем, есть ли сообщение об отсутствии врачей
+            try:
+                no_doctors = await page.query_selector("div.b-empty-content")
+                if no_doctors:
+                    logger.info(f"На странице нет врачей: {url}")
+                    await update_progress(progress_msg, 100)
+                    await progress_msg.delete()
+                    return []
+            except:
+                pass
+            
+            await update_progress(progress_msg, 100)
+            await progress_msg.delete()
+            return []
+        
+        # Даем время на полную загрузку JavaScript
+        await asyncio.sleep(3)
+        await update_progress(progress_msg, 75)
+        
+        content = await page.content()
+        await update_progress(progress_msg, 80)
+        
+        soup = BeautifulSoup(content, "html.parser")
+        cards = soup.select("div.b-doctor-card")[:max_count]
+        
+        if not cards:
+            logger.warning(f"Карточки врачей не найдены на странице: {url}")
+            await update_progress(progress_msg, 100)
+            await progress_msg.delete()
+            return []
+
+        for i, card in enumerate(cards):
+            try:
+                progress = 80 + int((i + 1) / len(cards) * 15)
+                await update_progress(progress_msg, progress)
+                
+                # Добавляем небольшую задержку между обработкой карточек
+                await asyncio.sleep(0.1)
+                
+                name = card.select_one("span.b-doctor-card__name-surname")
+                rating_el = card.select_one("div.b-stars-rate__progress")
+                rating = "0.0"
+                if rating_el and 'style' in rating_el.attrs:
+                    try:
+                        width_str = rating_el['style'].replace('width:', '').replace('em', '').strip()
+                        rating = f"{round(float(width_str) / 1.28, 1)}"
+                    except:
+                        pass
+                
+                photo = card.select_one("img.b-profile-card__img")
+                experience = card.select_one("div.b-doctor-card__experience .ui-text_subtitle-1")
+                
+                clinic = "Не указана"
+                address = "Не указан"
+                clinic_container = card.select_one("div.b-doctor-card__lpu-select")
+                if clinic_container:
+                    clinic_el = clinic_container.select_one("span.b-select__trigger-main-text")
+                    address_el = clinic_container.select_one("span.b-select__trigger-adit-text")
+                    if clinic_el:
+                        clinic = clinic_el.get_text(strip=True)
+                    if address_el:
+                        address = address_el.get_text(strip=True)
+                
+                # Ищем цену в разных местах
+                price = None
+                price_selectors = [
+                    ".b-doctor-card__price .ui-text_subtitle-1",
+                    ".b-doctor-card__tabs-wrapper_club fieldset .ui-text_subtitle-1",
+                    ".b-doctor-card__price-value",
+                    ".ui-text_subtitle-1"
+                ]
+                
+                for selector in price_selectors:
+                    price_elem = card.select_one(selector)
+                    if price_elem and price_elem.get_text(strip=True):
+                        price = price_elem
+                        break
+                
+                # Ищем телефон в разных местах
+                phone = None
+                phone_selectors = [
+                    ".b-doctor-card__lpu-phone-container .b-doctor-card__lpu-phone",
+                    ".b-doctor-card__phone .ui-text_subtitle-1",
+                    ".b-doctor-card__contact-phone"
+                ]
+                
+                for selector in phone_selectors:
+                    phone_elem = card.select_one(selector)
+                    if phone_elem and phone_elem.get_text(strip=True):
+                        phone = phone_elem
+                        break
+                
+                phone_text = phone.get_text(strip=True) if phone else "Не указан"
+                phone_clean = clean_phone(phone_text)
+
+                doctor_data = {
+                    "name": name.get_text(strip=True) if name else "Не указано",
+                    "rating": rating,
+                    "photo": base_url + photo["src"] if photo and photo.has_attr("src") else None,
+                    "experience": experience.get_text(strip=True) if experience else "Не указан",
+                    "clinic": clinic,
+                    "address": address,
+                    "price": price.get_text(strip=True).replace(u'\xa0', ' ') if price else "Не указана",
+                    "phone": phone_text,
+                    "phone_clean": phone_clean
+                }
+                doctors.append(doctor_data)
+                
+            except Exception as e:
+                logger.error(f"Ошибка парсинга карточки {i}: {e}")
+                continue
+
+        doctors.sort(key=lambda x: float(x['rating']), reverse=True)
+        await update_progress(progress_msg, 100)
+        await asyncio.sleep(2)  # Даем время увидеть 100%
+        if progress_msg:
+            await progress_msg.delete()
+        
+        logger.info(f"Успешно найдено {len(doctors)} врачей для {specialization_slug}")
+        return doctors
+        
+    except asyncio.TimeoutError:
+        logger.error(f"Таймаут при парсинге {specialization_slug}")
+        if progress_msg:
+            try:
+                await progress_msg.edit_text("⏰ Время поиска истекло. Попробуйте позже.")
+            except:
+                pass
+        return []
+    except Exception as e:
+        logger.error(f"Критическая ошибка парсинга {specialization_slug}: {e}")
+        if progress_msg:
+            try:
+                await progress_msg.edit_text("⚠️ Ошибка при поиске врачей. Попробуйте позже.")
+            except:
+                pass
+        return []
+    finally:
+        # Закрываем ресурсы с обработкой ошибок
+        close_tasks = []
+        
+        if page:
+            close_tasks.append(page.close())
+        if context:
+            close_tasks.append(context.close())
+        if browser:
+            close_tasks.append(browser.close())
+        if 'playwright' in locals():
+            close_tasks.append(playwright.stop())
+        
+        # Выполняем все закрытия параллельно с таймаутом
+        if close_tasks:
+            try:
+                await asyncio.wait_for(asyncio.gather(*close_tasks, return_exceptions=True), timeout=30)
+            except:
+                pass
+
+    try:
+        progress_msg = await bot.send_message(chat_id, "🔍 Поиск врачей... 0%")
+        
+        playwright = await async_playwright().start()
+        await update_progress(progress_msg, 10)
+        
         browser = await playwright.chromium.launch(
             headless=True,
             args=[
