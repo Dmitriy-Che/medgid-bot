@@ -139,28 +139,56 @@ async def ask_yandex_gpt(symptoms: str):
         "Authorization": f"Api-Key {YANDEX_API_KEY}",
         "Content-Type": "application/json"
     }
+    
+    # Улучшенный промпт
     prompt = f"""
-Ты медицинский консультант. По описанию проблемы предложи 1-3 самых подходящих специалиста из доступных:
-{", ".join(SPECIALIZATIONS.keys())}.
-Также предложи краткий приблизительный диагноз.
+Ты опытный медицинский консультант. Проанализируй симптомы и предложи наиболее подходящих специалистов из этого списка:
+{", ".join(SPECIALIZATIONS.keys())}
+
+ВОЗМОЖНЫЕ СПЕЦИАЛИСТЫ ДЛЯ РЕКОМЕНДАЦИИ:
+- При головной боли, головокружении, проблемах с памятью → Невролог
+- При боли в сердце, давлении, аритмии → Кардиолог  
+- При кашле, одышке, проблемах с дыханием → Пульмонолог
+- При боли в животе, тошноте, проблемах с ЖКТ → Гастроэнтеролог или Терапевт
+- При проблемах с кожей, сыпи, зуде → Дерматолог
+- При боли в суставах, мышцах, травмах → Травматолог или Ортопед
+- При проблемах со зрением → Офтальмолог
+- При женских проблемах → Гинеколог
+- При мужских проблемах → Уролог
+- При гормональных нарушениях → Эндокринолог
+- При общих симптомах (температура, слабость) → Терапевт
+
+Формат ответа ДОЛЖЕН БЫТЬ ТОЧНО ТАКИМ:
+Диагноз: [краткое описание возможного заболевания]. Специалисты: [Специалист1], [Специалист2]
+
+Симптомы: {symptoms}
 """
+    
     payload = {
         "modelUri": f"gpt://{YANDEX_FOLDER_ID}/yandexgpt/latest",
-        "completionOptions": {"stream": False, "temperature": 0.3, "maxTokens": 500},
-        "messages": [{"role": "user", "text": prompt + "\n\n" + symptoms}]
+        "completionOptions": {"stream": False, "temperature": 0.7, "maxTokens": 500},
+        "messages": [{"role": "user", "text": prompt}]
     }
+    
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, headers=headers, json=payload) as resp:
+            async with session.post(url, headers=headers, json=payload, timeout=30) as resp:
                 if resp.status != 200:
+                    error_text = await resp.text()
+                    logger.error(f"Ошибка YandexGPT (status {resp.status}): {error_text}")
                     return "Ошибка: Не удалось получить рекомендации."
+                
                 data = await resp.json()
                 return data["result"]["alternatives"][0]["message"]["text"]
+                
+    except asyncio.TimeoutError:
+        logger.error("Таймаут запроса к YandexGPT")
+        return "Ошибка: Время запроса истекло."
     except Exception as e:
         logger.error(f"Ошибка YandexGPT: {e}")
         return "Ошибка сервиса."
 
-async def scrape_with_playwright(specialization_slug, chat_id, max_count=MAX_DOCTORS):
+async def scrape_doctors(specialization_slug, chat_id, max_count=MAX_DOCTORS):
     base_url = "https://prodoctorov.ru"
     url = f"{base_url}/domodedovo/{specialization_slug}/"
     doctors = []
@@ -170,14 +198,10 @@ async def scrape_with_playwright(specialization_slug, chat_id, max_count=MAX_DOC
         progress_msg = await bot.send_message(chat_id, "🔍 Поиск врачей... 0%")
         await update_progress(progress_msg, 10)
 
-        # Используем aiohttp для простого HTTP запроса
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             'Accept-Language': 'ru-RU,ru;q=0.8,en-US;q=0.5,en;q=0.3',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
         }
 
         await update_progress(progress_msg, 20)
@@ -193,10 +217,6 @@ async def scrape_with_playwright(specialization_slug, chat_id, max_count=MAX_DOC
                     html = await response.text()
                     await update_progress(progress_msg, 40)
 
-            except asyncio.TimeoutError:
-                await update_progress(progress_msg, 100)
-                await progress_msg.edit_text("⏰ Время загрузки истекло")
-                return []
             except Exception as e:
                 logger.error(f"Ошибка HTTP запроса: {e}")
                 await update_progress(progress_msg, 100)
@@ -205,11 +225,9 @@ async def scrape_with_playwright(specialization_slug, chat_id, max_count=MAX_DOC
 
         await update_progress(progress_msg, 60)
 
-        # Парсим HTML с BeautifulSoup
         soup = BeautifulSoup(html, 'html.parser')
         await update_progress(progress_msg, 70)
         
-        # Ищем карточки врачей
         cards = soup.select('div.b-doctor-card')
         
         if not cards:
@@ -223,9 +241,8 @@ async def scrape_with_playwright(specialization_slug, chat_id, max_count=MAX_DOC
             try:
                 progress = 80 + int((i + 1) / min(len(cards), max_count) * 15)
                 await update_progress(progress_msg, progress)
-                await asyncio.sleep(0.1)  # Небольшая задержка
+                await asyncio.sleep(0.1)
 
-                # Извлекаем данные
                 name_elem = card.select_one('span.b-doctor-card__name-surname')
                 name = name_elem.get_text(strip=True) if name_elem else "Не указано"
 
@@ -242,46 +259,38 @@ async def scrape_with_playwright(specialization_slug, chat_id, max_count=MAX_DOC
                 photo = None
                 if photo_elem and photo_elem.get('src'):
                     photo_url = photo_elem['src']
-                    if photo_url.startswith('http'):
-                        photo = photo_url
-                    else:
-                        photo = base_url + photo_url
+                    photo = photo_url if photo_url.startswith('http') else base_url + photo_url
 
                 experience_elem = card.select_one('div.b-doctor-card__experience .ui-text_subtitle-1')
                 experience = experience_elem.get_text(strip=True) if experience_elem else "Не указан"
 
-                # Клиника и адрес
-                clinic_container = card.select_one('div.b-doctor-card__lpu-select')
                 clinic = "Не указана"
                 address = "Не указан"
+                clinic_container = card.select_one('div.b-doctor-card__lpu-select')
                 if clinic_container:
                     clinic_elem = clinic_container.select_one('span.b-select__trigger-main-text')
                     address_elem = clinic_container.select_one('span.b-select__trigger-adit-text')
                     clinic = clinic_elem.get_text(strip=True) if clinic_elem else "Не указана"
                     address = address_elem.get_text(strip=True) if address_elem else "Не указан"
 
-                # Цена
                 price = "Не указана"
-                price_selectors = [
+                price_elems = [
                     '.b-doctor-card__price .ui-text_subtitle-1',
                     '.b-doctor-card__tabs-wrapper_club fieldset .ui-text_subtitle-1',
-                    '.b-doctor-card__price-value'
                 ]
-                for selector in price_selectors:
+                for selector in price_elems:
                     price_elem = card.select_one(selector)
                     if price_elem and price_elem.get_text(strip=True):
                         price = price_elem.get_text(strip=True).replace(u'\xa0', ' ')
                         break
 
-                # Телефон
                 phone = "Не указан"
                 phone_clean = None
-                phone_selectors = [
+                phone_elems = [
                     '.b-doctor-card__lpu-phone-container .b-doctor-card__lpu-phone',
                     '.b-doctor-card__phone .ui-text_subtitle-1',
-                    '.b-doctor-card__contact-phone'
                 ]
-                for selector in phone_selectors:
+                for selector in phone_elems:
                     phone_elem = card.select_one(selector)
                     if phone_elem and phone_elem.get_text(strip=True):
                         phone = phone_elem.get_text(strip=True)
@@ -323,6 +332,7 @@ async def scrape_with_playwright(specialization_slug, chat_id, max_count=MAX_DOC
             except:
                 pass
         return []
+
 # ------------------ FSM ------------------
 class Form(StatesGroup):
     waiting_for_symptoms = State()
@@ -333,24 +343,25 @@ class Form(StatesGroup):
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
 
-@dp.message(F.text.in_(SPECIALIZATIONS.keys()), StateFilter(Form.waiting_for_specialist_choice))
-async def handle_recommended_doctor_choice(message: types.Message, state: FSMContext):
+# Обработчик для кнопок специалистов
+@dp.message(F.text.in_(SPECIALIZATIONS.keys()))
+async def handle_doctor_choice(message: types.Message, state: FSMContext):
+    logger.info(f"Выбор специалиста: {message.text}")
     spec_name = message.text
     spec_slug = SPECIALIZATIONS[spec_name]
-    user_data = await state.get_data()
-    recommended_keyboard = user_data.get('recommended_keyboard')
-    await send_doctors_list(message, spec_slug, spec_name, keyboard_to_keep=recommended_keyboard)
-
-@dp.message(F.text.in_(SPECIALIZATIONS.keys()), StateFilter(None))
-async def handle_direct_doctor_choice(message: types.Message, state: FSMContext):
-    await state.clear()
-    spec_name = message.text
-    spec_slug = SPECIALIZATIONS[spec_name]
-    await send_doctors_list(message, spec_slug, spec_name, keyboard_to_keep=get_back_to_menu_keyboard())
+    
+    # Проверяем, есть ли состояние ожидания выбора рекомендованного специалиста
+    current_state = await state.get_state()
+    if current_state == Form.waiting_for_specialist_choice:
+        user_data = await state.get_data()
+        recommended_keyboard = user_data.get('recommended_keyboard')
+        await send_doctors_list(message, spec_slug, spec_name, keyboard_to_keep=recommended_keyboard)
+    else:
+        await state.clear()
+        await send_doctors_list(message, spec_slug, spec_name, keyboard_to_keep=get_back_to_menu_keyboard())
 
 @dp.message(Command("start"))
-@dp.message(F.text == "Главное меню")
-async def start(message: types.Message, state: FSMContext):
+async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
     caption = (
         "👋 Добро пожаловать в <b>МедГид – Домодедово!</b> 🩺\n\n"
@@ -367,6 +378,10 @@ async def start(message: types.Message, state: FSMContext):
         await message.answer(caption, parse_mode="HTML", reply_markup=get_start_keyboard())
     await state.set_state(Form.waiting_for_choice)
 
+@dp.message(F.text == "Главное меню")
+async def handle_main_menu(message: types.Message, state: FSMContext):
+    await cmd_start(message, state)
+
 @dp.message(Form.waiting_for_choice, F.text == "🔵 Найти специалиста")
 async def handle_find_specialist_choice(message: types.Message, state: FSMContext):
     await state.clear()
@@ -379,7 +394,11 @@ async def handle_describe_symptoms_choice(message: types.Message, state: FSMCont
 
 @dp.message(Form.waiting_for_symptoms)
 async def handle_symptoms(message: types.Message, state: FSMContext):
-    symptoms = message.text
+    symptoms = message.text.strip()
+    if not symptoms:
+        await message.answer("Пожалуйста, опишите ваши симптомы.")
+        return
+        
     await message.answer("🔍 Анализирую симптомы...")
     yandex_response = await ask_yandex_gpt(symptoms)
     log_interaction(message.from_user, symptoms, yandex_response)
@@ -389,12 +408,39 @@ async def handle_symptoms(message: types.Message, state: FSMContext):
         await state.clear()
         return
 
-    # Упрощенный парсинг ответа
-    if "терапевт" in yandex_response.lower():
-        specialists = ["Терапевт"]
-    elif "невролог" in yandex_response.lower():
-        specialists = ["Невролог"]
-    else:
+    # Парсим ответ YandexGPT
+    diagnosis = "неопределенное состояние"
+    specialists = ["Терапевт"]  # по умолчанию
+    
+    try:
+        # Ищем паттерн в ответе
+        if "Диагноз:" in yandex_response and "Специалисты:" in yandex_response:
+            parts = yandex_response.split("Специалисты:")
+            if len(parts) >= 2:
+                diagnosis_part = parts[0].replace("Диагноз:", "").strip()
+                specialists_part = parts[1].strip()
+                
+                diagnosis = diagnosis_part.split(".")[0] if diagnosis_part else "неопределенное состояние"
+                
+                # Извлекаем специалистов
+                specialists = []
+                for spec in SPECIALIZATIONS.keys():
+                    if spec.lower() in specialists_part.lower():
+                        specialists.append(spec)
+                
+                if not specialists:
+                    specialists = ["Терапевт"]
+        else:
+            # Альтернативный парсинг
+            for spec in SPECIALIZATIONS.keys():
+                if spec.lower() in yandex_response.lower():
+                    specialists.append(spec)
+            
+            if len(specialists) > 2:
+                specialists = specialists[:2]
+                
+    except Exception as e:
+        logger.error(f"Ошибка парсинга ответа YandexGPT: {e}")
         specialists = ["Терапевт"]
 
     recommended_kb = ReplyKeyboardBuilder()
@@ -405,11 +451,18 @@ async def handle_symptoms(message: types.Message, state: FSMContext):
 
     await state.update_data(recommended_keyboard=recommended_kb.as_markup(resize_keyboard=True))
     await message.answer(
-        f"Рекомендую обратиться к: {', '.join(specialists)}\n\n"
+        f"<b>Возможный диагноз:</b> {diagnosis}\n\n"
+        f"<b>Рекомендую обратиться к:</b> {', '.join(specialists)}\n\n"
         f"Нажмите на кнопку, чтобы увидеть список врачей.",
+        parse_mode="HTML",
         reply_markup=recommended_kb.as_markup(resize_keyboard=True)
     )
     await state.set_state(Form.waiting_for_specialist_choice)
+
+# Обработчик любого другого текста
+@dp.message()
+async def handle_unknown_message(message: types.Message):
+    await message.answer("Пожалуйста, используйте кнопки меню для навигации.", reply_markup=get_start_keyboard())
 
 async def send_doctors_list(message, spec_slug, spec_name, keyboard_to_keep=None):
     doctors = await get_cached_doctors(spec_slug)
@@ -417,7 +470,7 @@ async def send_doctors_list(message, spec_slug, spec_name, keyboard_to_keep=None
     
     if not doctors:
         from_cache = False
-        doctors = await scrape_with_playwright(spec_slug, message.chat.id)
+        doctors = await scrape_doctors(spec_slug, message.chat.id)
 
     if not doctors:
         await message.answer(f"😕 Не удалось найти врачей '{spec_name}'.", reply_markup=get_back_to_menu_keyboard())
@@ -431,7 +484,7 @@ async def send_doctors_list(message, spec_slug, spec_name, keyboard_to_keep=None
         }
         save_cache(cache)
 
-    await message.answer(f"⭐ **Врачи {spec_name}**", parse_mode="Markdown")
+    await message.answer(f"⭐ <b>Врачи {spec_name}</b>", parse_mode="HTML")
 
     for idx, doc in enumerate(doctors, 1):
         if doc.get('phone_clean'):
@@ -468,12 +521,12 @@ async def send_doctors_list(message, spec_slug, spec_name, keyboard_to_keep=None
     if keyboard_to_keep:
         await message.answer("✅ Готово!", reply_markup=keyboard_to_keep)
     else:
-        await message.answer("✅ Готово!")
+        await message.answer("✅ Готово!", reply_markup=get_back_to_menu_keyboard())
 
 # ------------------ ЗАПУСК ------------------
 async def main():
     logger.info("🚀 Бот запущен...")
-    await dp.start_polling(bot)
+    await dp.start_polling(bot, skip_updates=True)
 
 if __name__ == "__main__":
     asyncio.run(main())
