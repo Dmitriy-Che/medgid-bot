@@ -150,7 +150,7 @@ async def get_cached_doctors(spec_slug):
     cache = load_cache()
     if spec_slug in cache:
         cached_time = datetime.fromisoformat(cache[spec_slug]["time"])
-        if datetime.now() - cached_time < timedelta(hours=CACHE_EXpiRE_HOURS):
+        if datetime.now() - cached_time < timedelta(hours=CACHE_EXPIRE_HOURS):
             return cache[spec_slug]["data"]
     return None
 
@@ -385,26 +385,15 @@ bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTM
 dp = Dispatcher(storage=MemoryStorage())
 
 # ------------------ РАССЫЛКА ------------------
-async def broadcast_message(message_text: str, photo_path: str = None, document_path: str = None):
-    """Отправка рассылки всем пользователям с поддержкой фото и файлов"""
+async def broadcast_message(message_text: str, photo_path: str = None):
+    """Отправка рассылки всем пользователям"""
     users = load_users()
     successful = 0
     failed = 0
     
     for user in users:
         try:
-            # Если есть документ - отправляем документ
-            if document_path and os.path.exists(document_path):
-                with open(document_path, "rb") as doc:
-                    await bot.send_document(
-                        chat_id=user['id'],
-                        document=doc,
-                        caption=message_text,
-                        parse_mode="HTML"
-                    )
-            
-            # Если есть фото - отправляем фото
-            elif photo_path and os.path.exists(photo_path):
+            if photo_path and os.path.exists(photo_path):
                 with open(photo_path, "rb") as photo:
                     await bot.send_photo(
                         chat_id=user['id'],
@@ -412,18 +401,14 @@ async def broadcast_message(message_text: str, photo_path: str = None, document_
                         caption=message_text,
                         parse_mode="HTML"
                     )
-            
-            # Если нет файлов - отправляем просто текст
             else:
                 await bot.send_message(
                     chat_id=user['id'],
                     text=message_text,
                     parse_mode="HTML"
                 )
-            
             successful += 1
             await asyncio.sleep(0.1)
-            
         except Exception as e:
             logger.error(f"Ошибка отправки пользователю {user['id']}: {e}")
             failed += 1
@@ -455,86 +440,6 @@ async def cmd_broadcast(message: types.Message):
         f"❌ Не удалось: {failed}"
     )
 
-@dp.message(Command("broadcast_photo"))
-async def cmd_broadcast_photo(message: types.Message):
-    """Рассылка с фото (только для админа)"""
-    if message.from_user.id != ADMIN_ID:
-        await message.answer("❌ Эта команда только для администратора")
-        return
-    
-    # Проверяем, есть ли фото и текст
-    if not message.reply_to_message or not message.reply_to_message.photo:
-        await message.answer(
-            "❌ Формат команды:\n"
-            "1. Отправьте фото с подписью\n"
-            "2. Ответьте на фото командой /broadcast_photo"
-        )
-        return
-    
-    # Скачиваем фото
-    photo = message.reply_to_message.photo[-1]
-    photo_file = await bot.get_file(photo.file_id)
-    photo_path = f"broadcast_photo_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
-    
-    await bot.download_file(photo_file.file_path, photo_path)
-    
-    # Текст из подписи к фото или из сообщения
-    caption = message.reply_to_message.caption or "📸"
-    users_count = len(load_users())
-    
-    await message.answer(f"📸 Начинаю рассылку фото для {users_count} пользователей...")
-    
-    successful, failed = await broadcast_message(caption, photo_path=photo_path)
-    
-    # Удаляем временный файл
-    if os.path.exists(photo_path):
-        os.remove(photo_path)
-    
-    await message.answer(
-        f"✅ Рассылка с фото завершена!\n"
-        f"✔️ Успешно: {successful}\n"
-        f"❌ Не удалось: {failed}"
-    )
-
-@dp.message(Command("broadcast_file"))
-async def cmd_broadcast_file(message: types.Message):
-    """Рассылка с файлом (только для админа)"""
-    if message.from_user.id != ADMIN_ID:
-        await message.answer("❌ Эта команда только для администратора")
-        return
-    
-    if not message.reply_to_message or not message.reply_to_message.document:
-        await message.answer(
-            "❌ Формат команды:\n"
-            "1. Отправьте файл с подписью\n"
-            "2. Ответьте на файл командой /broadcast_file"
-        )
-        return
-    
-    # Скачиваем документ
-    document = message.reply_to_message.document
-    document_file = await bot.get_file(document.file_id)
-    document_path = f"broadcast_{document.file_name}"
-    
-    await bot.download_file(document_file.file_path, document_path)
-    
-    caption = message.reply_to_message.caption or "📎"
-    users_count = len(load_users())
-    
-    await message.answer(f"📎 Начинаю рассылку файла для {users_count} пользователей...")
-    
-    successful, failed = await broadcast_message(caption, document_path=document_path)
-    
-    # Удаляем временный файл
-    if os.path.exists(document_path):
-        os.remove(document_path)
-    
-    await message.answer(
-        f"✅ Рассылка с файлом завершена!\n"
-        f"✔️ Успешно: {successful}\n"
-        f"❌ Не удалось: {failed}"
-    )
-
 @dp.message(Command("stats"))
 async def cmd_stats(message: types.Message):
     """Статистика пользователей"""
@@ -549,32 +454,6 @@ async def cmd_stats(message: types.Message):
         f"📅 Последние 7 дней: {len([u for u in users if datetime.fromisoformat(u['joined_date']) > datetime.now() - timedelta(days=7)])}\n"
         f"🆕 Сегодня: {len([u for u in users if datetime.fromisoformat(u['joined_date']).date() == datetime.now().date()])}"
     )
-
-@dp.message(Command("help_admin"))
-async def cmd_help_admin(message: types.Message):
-    """Помощь по админ-командам"""
-    if message.from_user.id != ADMIN_ID:
-        await message.answer("❌ Эта команда только для администратора")
-        return
-    
-    help_text = """
-🤖 <b>Админ-команды:</b>
-
-📊 <b>/stats</b> - Статистика пользователей
-📤 <b>/broadcast текст</b> - Текстовая рассылка
-📸 <b>/broadcast_photo</b> - Рассылка с фото (ответьте на фото)
-📎 <b>/broadcast_file</b> - Рассылка с файлом (ответьте на файл)
-🆘 <b>/help_admin</b> - Эта справка
-
-<b>Как делать рассылку с фото:</b>
-1. Отправьте фото с подписью
-2. Ответьте на фото командой /broadcast_photo
-
-<b>Как делать рассылку с файлом:</b>
-1. Отправьте файл с подписью
-2. Ответьте на файл командой /broadcast_file
-"""
-    await message.answer(help_text, parse_mode="HTML")
 
 # ------------------ ОСНОВНЫЕ ОБРАБОТЧИКИ ------------------
 @dp.message(F.text.in_(SPECIALIZATIONS.keys()))
@@ -696,10 +575,9 @@ async def handle_symptoms(message: types.Message, state: FSMContext):
     )
     await state.set_state(Form.waiting_for_specialist_choice)
 
-# Обработчик любого другого текста
 @dp.message()
 async def handle_unknown_message(message: types.Message):
-    await message.answer("Пожалуйста, используйте кнопки меню ниже, для навигации.", reply_markup=get_start_keyboard())
+    await message.answer("Пожалуйста, используйте кнопки меню для навигации.", reply_markup=get_start_keyboard())
 
 async def send_doctors_list(message, spec_slug, spec_name, keyboard_to_keep=None):
     doctors = await get_cached_doctors(spec_slug)
