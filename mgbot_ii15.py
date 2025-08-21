@@ -529,17 +529,17 @@ async def send_doctors_list(message, spec_slug, spec_name, keyboard_to_keep=None
             phone_text = doc['phone']
 
         # Создаем Web App кнопку вместо обычной URL кнопки
-keyboard = None
-if doc.get('link'):
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(
-            text="📋 Открыть карточку врача", 
-            web_app=types.WebAppInfo(url=doc['link'])
-        )]
-    ])
-    logger.info(f"Добавляем Web App кнопку для врача {doc['name']}: {doc['link']}")
-else:
-    logger.warning(f"Нет ссылки для врача {doc['name']}")
+        keyboard = None
+        if doc.get('link'):
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(
+                    text="📋 Открыть карточку врача", 
+                    web_app=types.WebAppInfo(url=doc['link'])
+                )]
+            ])
+            logger.info(f"Добавляем Web App кнопку для врача {doc['name']}: {doc['link']}")
+        else:
+            logger.warning(f"Нет ссылки для врача {doc['name']}")
 
         caption = (
             f"<b>{idx}. {doc['name']}</b> (⭐ {doc['rating']})\n"
