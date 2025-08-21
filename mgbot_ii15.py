@@ -247,11 +247,35 @@ async def scrape_doctors(specialization_slug, chat_id, max_count=MAX_DOCTORS):
                 name_elem = card.select_one('span.b-doctor-card__name-surname')
                 name = name_elem.get_text(strip=True) if name_elem else "Не указано"
 
-                # НАХОДИМ ССЫЛКУ НА ВРАЧА
+                # НАХОДИМ ССЫЛКУ НА ВРАЧА - ПРАВИЛЬНЫЙ СЕЛЕКТОР
                 doctor_link = None
-                link_elem = card.select_one('a.b-doctor-card__name')
-                if link_elem and link_elem.get('href'):
-                    doctor_link = base_url + link_elem['href']
+                # Пробуем разные селекторы для ссылки
+                link_selectors = [
+                    'a.b-doctor-card__name',
+                    'a[href*="/doctor/"]',
+                    'a.b-doctor-card__link',
+                    'a.b-profile-card__name'
+                ]
+                
+                for selector in link_selectors:
+                    link_elem = card.select_one(selector)
+                    if link_elem and link_elem.get('href'):
+                        href = link_elem['href']
+                        if href.startswith('/'):
+                            doctor_link = base_url + href
+                        elif href.startswith('http'):
+                            doctor_link = href
+                        break
+                
+                # Если не нашли ссылку, пробуем найти любую ссылку в карточке
+                if not doctor_link:
+                    any_link = card.select_one('a[href]')
+                    if any_link and any_link.get('href'):
+                        href = any_link['href']
+                        if href.startswith('/'):
+                            doctor_link = base_url + href
+                        elif href.startswith('http'):
+                            doctor_link = href
 
                 rating_elem = card.select_one('div.b-stars-rate__progress')
                 rating = "0.0"
@@ -330,6 +354,10 @@ async def scrape_doctors(specialization_slug, chat_id, max_count=MAX_DOCTORS):
             await progress_msg.delete()
 
         logger.info(f"Найдено {len(doctors)} врачей для {specialization_slug}")
+        # Логируем найденные ссылки для отладки
+        for i, doc in enumerate(doctors):
+            logger.info(f"Врач {i+1}: {doc['name']}, ссылка: {doc.get('link', 'Нет ссылки')}")
+        
         return doctors
 
     except Exception as e:
@@ -501,13 +529,14 @@ async def send_doctors_list(message, spec_slug, spec_name, keyboard_to_keep=None
             phone_text = doc['phone']
 
         # Создаем инлайн-клавиатуру с кнопкой "Открыть карточку"
-        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-        
         keyboard = None
         if doc.get('link'):
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="📋 Открыть карточку врача", url=doc['link'])]
             ])
+            logger.info(f"Добавляем кнопку для врача {doc['name']}: {doc['link']}")
+        else:
+            logger.warning(f"Нет ссылки для врача {doc['name']}")
 
         caption = (
             f"<b>{idx}. {doc['name']}</b> (⭐ {doc['rating']})\n"
