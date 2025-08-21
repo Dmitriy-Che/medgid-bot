@@ -385,15 +385,26 @@ bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTM
 dp = Dispatcher(storage=MemoryStorage())
 
 # ------------------ РАССЫЛКА ------------------
-async def broadcast_message(message_text: str, photo_path: str = None):
-    """Отправка рассылки всем пользователям"""
+async def broadcast_message(message_text: str, photo_path: str = None, document_path: str = None):
+    """Отправка рассылки всем пользователям с поддержкой фото и файлов"""
     users = load_users()
     successful = 0
     failed = 0
     
     for user in users:
         try:
-            if photo_path and os.path.exists(photo_path):
+            # Если есть документ - отправляем документ
+            if document_path and os.path.exists(document_path):
+                with open(document_path, "rb") as doc:
+                    await bot.send_document(
+                        chat_id=user['id'],
+                        document=doc,
+                        caption=message_text,
+                        parse_mode="HTML"
+                    )
+            
+            # Если есть фото - отправляем фото
+            elif photo_path and os.path.exists(photo_path):
                 with open(photo_path, "rb") as photo:
                     await bot.send_photo(
                         chat_id=user['id'],
@@ -401,14 +412,18 @@ async def broadcast_message(message_text: str, photo_path: str = None):
                         caption=message_text,
                         parse_mode="HTML"
                     )
+            
+            # Если нет файлов - отправляем просто текст
             else:
                 await bot.send_message(
                     chat_id=user['id'],
                     text=message_text,
                     parse_mode="HTML"
                 )
+            
             successful += 1
             await asyncio.sleep(0.1)
+            
         except Exception as e:
             logger.error(f"Ошибка отправки пользователю {user['id']}: {e}")
             failed += 1
@@ -436,6 +451,86 @@ async def cmd_broadcast(message: types.Message):
     
     await message.answer(
         f"✅ Рассылка завершена!\n"
+        f"✔️ Успешно: {successful}\n"
+        f"❌ Не удалось: {failed}"
+    )
+
+@dp.message(Command("broadcast_photo"))
+async def cmd_broadcast_photo(message: types.Message):
+    """Рассылка с фото (только для админа)"""
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("❌ Эта команда только для администратора")
+        return
+    
+    # Проверяем, есть ли фото и текст
+    if not message.reply_to_message or not message.reply_to_message.photo:
+        await message.answer(
+            "❌ Формат команды:\n"
+            "1. Отправьте фото с подписью\n"
+            "2. Ответьте на фото командой /broadcast_photo"
+        )
+        return
+    
+    # Скачиваем фото
+    photo = message.reply_to_message.photo[-1]
+    photo_file = await bot.get_file(photo.file_id)
+    photo_path = f"broadcast_photo_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
+    
+    await bot.download_file(photo_file.file_path, photo_path)
+    
+    # Текст из подписи к фото или из сообщения
+    caption = message.reply_to_message.caption or "📸"
+    users_count = len(load_users())
+    
+    await message.answer(f"📸 Начинаю рассылку фото для {users_count} пользователей...")
+    
+    successful, failed = await broadcast_message(caption, photo_path=photo_path)
+    
+    # Удаляем временный файл
+    if os.path.exists(photo_path):
+        os.remove(photo_path)
+    
+    await message.answer(
+        f"✅ Рассылка с фото завершена!\n"
+        f"✔️ Успешно: {successful}\n"
+        f"❌ Не удалось: {failed}"
+    )
+
+@dp.message(Command("broadcast_file"))
+async def cmd_broadcast_file(message: types.Message):
+    """Рассылка с файлом (только для админа)"""
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("❌ Эта команда только для администратора")
+        return
+    
+    if not message.reply_to_message or not message.reply_to_message.document:
+        await message.answer(
+            "❌ Формат команды:\n"
+            "1. Отправьте файл с подписью\n"
+            "2. Ответьте на файл командой /broadcast_file"
+        )
+        return
+    
+    # Скачиваем документ
+    document = message.reply_to_message.document
+    document_file = await bot.get_file(document.file_id)
+    document_path = f"broadcast_{document.file_name}"
+    
+    await bot.download_file(document_file.file_path, document_path)
+    
+    caption = message.reply_to_message.caption or "📎"
+    users_count = len(load_users())
+    
+    await message.answer(f"📎 Начинаю рассылку файла для {users_count} пользователей...")
+    
+    successful, failed = await broadcast_message(caption, document_path=document_path)
+    
+    # Удаляем временный файл
+    if os.path.exists(document_path):
+        os.remove(document_path)
+    
+    await message.answer(
+        f"✅ Рассылка с файлом завершена!\n"
         f"✔️ Успешно: {successful}\n"
         f"❌ Не удалось: {failed}"
     )
@@ -532,136 +627,4 @@ async def handle_symptoms(message: types.Message, state: FSMContext):
     specialists = ["Терапевт"]
     
     try:
-        if "Диагноз:" in yandex_response and "Специалисты:" in yandex_response:
-            parts = yandex_response.split("Специалисты:")
-            if len(parts) >= 2:
-                diagnosis_part = parts[0].replace("Диагноз:", "").strip()
-                specialists_part = parts[1].strip()
-                
-                diagnosis = diagnosis_part.split(".")[0] if diagnosis_part else "неопределенное состояние"
-                
-                specialists = []
-                for spec in SPECIALIZATIONS.keys():
-                    if spec.lower() in specialists_part.lower():
-                        specialists.append(spec)
-                
-                if not specialists:
-                    specialists = ["Терапевт"]
-        else:
-            for spec in SPECIALIZATIONS.keys():
-                if spec.lower() in yandex_response.lower():
-                    specialists.append(spec)
-            
-            if len(specialists) > 2:
-                specialists = specialists[:2]
-                
-    except Exception as e:
-        logger.error(f"Ошибка парсинга ответа YandexGPT: {e}")
-        specialists = ["Терапевт"]
-
-    recommended_kb = ReplyKeyboardBuilder()
-    for spec_name in specialists:
-        recommended_kb.add(KeyboardButton(text=spec_name))
-    recommended_kb.add(KeyboardButton(text="Главное меню"))
-    recommended_kb.adjust(2)
-
-    await state.update_data(recommended_keyboard=recommended_kb.as_markup(resize_keyboard=True))
-    await message.answer(
-        f"<b>Возможный диагноз:</b> {diagnosis}\n\n"
-        f"<b>Рекомендую обратиться к:</b> {', '.join(specialists)}\n\n"
-        f"Нажмите на кнопку, чтобы увидеть список врачей.",
-        parse_mode="HTML",
-        reply_markup=recommended_kb.as_markup(resize_keyboard=True)
-    )
-    await state.set_state(Form.waiting_for_specialist_choice)
-
-@dp.message()
-async def handle_unknown_message(message: types.Message):
-    await message.answer("Пожалуйста, используйте кнопки меню для навигации.", reply_markup=get_start_keyboard())
-
-async def send_doctors_list(message, spec_slug, spec_name, keyboard_to_keep=None):
-    doctors = await get_cached_doctors(spec_slug)
-    from_cache = True
-    
-    if not doctors:
-        from_cache = False
-        doctors = await scrape_doctors(spec_slug, message.chat.id)
-
-    if not doctors:
-        await message.answer(f"😕 Не удалось найти врачей '{spec_name}'.", reply_markup=get_back_to_menu_keyboard())
-        return
-
-    if not from_cache and doctors:
-        cache = load_cache()
-        cache[spec_slug] = {
-            "time": datetime.now().isoformat(),
-            "data": doctors
-        }
-        save_cache(cache)
-
-    await message.answer(f"⭐ <b>Врачи {spec_name}</b>", parse_mode="HTML")
-
-    for idx, doc in enumerate(doctors, 1):
-        if doc.get('phone_clean'):
-            phone_text = f'<a href="tel:{doc["phone_clean"]}">{doc["phone"]}</a>'
-        else:
-            phone_text = doc['phone']
-
-        keyboard = None
-        if doc.get('link'):
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(
-                    text="📋 Открыть карточку врача", 
-                    web_app=types.WebAppInfo(url=doc['link'])
-                )]
-            ])
-
-        caption = (
-            f"<b>{idx}. {doc['name']}</b> (⭐ {doc['rating']})\n"
-            f"📅 Стаж: {doc['experience']}\n"
-            f"🏥 Клиника: {doc['clinic']}\n"
-            f"📍 Адрес: {doc['address']}\n"
-            f"💰 Приём: {doc['price']}\n"
-            f"📞 Телефон: {phone_text}"
-        )
-
-        try:
-            if doc.get('photo'):
-                await bot.send_photo(
-                    message.chat.id, 
-                    photo=doc['photo'], 
-                    caption=caption, 
-                    parse_mode="HTML",
-                    reply_markup=keyboard
-                )
-            else:
-                await bot.send_message(
-                    message.chat.id, 
-                    text=caption, 
-                    parse_mode="HTML",
-                    reply_markup=keyboard
-                )
-        except Exception as e:
-            logger.error(f"Ошибка отправки: {e}")
-            plain_text = (
-                f"{idx}. {doc['name']} (⭐ {doc['rating']})\n"
-                f"Стаж: {doc['experience']}\n"
-                f"Клиника: {doc['clinic']}\n"
-                f"Адрес: {doc['address']}\n"
-                f"Приём: {doc['price']}\n"
-                f"Телефон: {doc['phone']}"
-            )
-            await bot.send_message(message.chat.id, text=plain_text, reply_markup=keyboard)
-
-    if keyboard_to_keep:
-        await message.answer("✅ Готово! Нажмите на кнопку под каждым врачом для просмотра подробной информации.", reply_markup=keyboard_to_keep)
-    else:
-        await message.answer("✅ Готово! Нажмите на кнопку под каждым врачом для просмотра подробной информации.", reply_markup=get_back_to_menu_keyboard())
-
-# ------------------ ЗАПУСК ------------------
-async def main():
-    logger.info("🚀 Бот запущен...")
-    await dp.start_polling(bot, skip_updates=True)
-
-if __name__ == "__main__":
-    asyncio.run(main())
+        if "Диагноз:" in yandex_response and "Специали
