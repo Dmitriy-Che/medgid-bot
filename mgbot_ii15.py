@@ -699,7 +699,7 @@ async def handle_symptoms(message: types.Message, state: FSMContext):
 # Обработчик любого другого текста
 @dp.message()
 async def handle_unknown_message(message: types.Message):
-    await message.answer("Пожалуйста, используйте кнопки меню для навигации.", reply_markup=get_start_keyboard())
+    await message.answer("Пожалуйста, используйте кнопки меню ниже, для навигации.", reply_markup=get_start_keyboard())
 
 async def send_doctors_list(message, spec_slug, spec_name, keyboard_to_keep=None):
     doctors = await get_cached_doctors(spec_slug)
