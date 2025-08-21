@@ -16,6 +16,7 @@ from aiogram.utils.keyboard import ReplyKeyboardBuilder
 from bs4 import BeautifulSoup
 from aiogram.client.default import DefaultBotProperties
 from dotenv import load_dotenv
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # ------------------ ЗАГРУЗКА .ENV ------------------
 load_dotenv()
@@ -246,6 +247,12 @@ async def scrape_doctors(specialization_slug, chat_id, max_count=MAX_DOCTORS):
                 name_elem = card.select_one('span.b-doctor-card__name-surname')
                 name = name_elem.get_text(strip=True) if name_elem else "Не указано"
 
+                # НАХОДИМ ССЫЛКУ НА ВРАЧА
+                doctor_link = None
+                link_elem = card.select_one('a.b-doctor-card__name')
+                if link_elem and link_elem.get('href'):
+                    doctor_link = base_url + link_elem['href']
+
                 rating_elem = card.select_one('div.b-stars-rate__progress')
                 rating = "0.0"
                 if rating_elem and rating_elem.get('style'):
@@ -299,6 +306,7 @@ async def scrape_doctors(specialization_slug, chat_id, max_count=MAX_DOCTORS):
 
                 doctors.append({
                     'name': name,
+                    'link': doctor_link,  # ДОБАВЛЯЕМ ССЫЛКУ
                     'rating': rating,
                     'photo': photo,
                     'experience': experience,
@@ -492,6 +500,15 @@ async def send_doctors_list(message, spec_slug, spec_name, keyboard_to_keep=None
         else:
             phone_text = doc['phone']
 
+        # Создаем инлайн-клавиатуру с кнопкой "Открыть карточку"
+        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+        
+        keyboard = None
+        if doc.get('link'):
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="📋 Открыть карточку врача", url=doc['link'])]
+            ])
+
         caption = (
             f"<b>{idx}. {doc['name']}</b> (⭐ {doc['rating']})\n"
             f"📅 Стаж: {doc['experience']}\n"
@@ -503,9 +520,20 @@ async def send_doctors_list(message, spec_slug, spec_name, keyboard_to_keep=None
 
         try:
             if doc.get('photo'):
-                await bot.send_photo(message.chat.id, photo=doc['photo'], caption=caption, parse_mode="HTML")
+                await bot.send_photo(
+                    message.chat.id, 
+                    photo=doc['photo'], 
+                    caption=caption, 
+                    parse_mode="HTML",
+                    reply_markup=keyboard  # Добавляем клавиатуру
+                )
             else:
-                await bot.send_message(message.chat.id, text=caption, parse_mode="HTML")
+                await bot.send_message(
+                    message.chat.id, 
+                    text=caption, 
+                    parse_mode="HTML",
+                    reply_markup=keyboard  # Добавляем клавиатуру
+                )
         except Exception as e:
             logger.error(f"Ошибка отправки: {e}")
             plain_text = (
@@ -516,12 +544,16 @@ async def send_doctors_list(message, spec_slug, spec_name, keyboard_to_keep=None
                 f"Приём: {doc['price']}\n"
                 f"Телефон: {doc['phone']}"
             )
-            await bot.send_message(message.chat.id, text=plain_text)
+            await bot.send_message(
+                message.chat.id, 
+                text=plain_text,
+                reply_markup=keyboard  # Добавляем клавиатуру
+            )
 
     if keyboard_to_keep:
-        await message.answer("✅ Готово!", reply_markup=keyboard_to_keep)
+        await message.answer("✅ Готово! Нажмите на кнопку 'Открыть карточку врача' под каждым врачом для просмотра подробной информации.", reply_markup=keyboard_to_keep)
     else:
-        await message.answer("✅ Готово!", reply_markup=get_back_to_menu_keyboard())
+        await message.answer("✅ Готово! Нажмите на кнопку 'Открыть карточку врача' под каждым врачом для просмотра подробной информации.", reply_markup=get_back_to_menu_keyboard())
 
 # ------------------ ЗАПУСК ------------------
 async def main():
