@@ -16,7 +16,7 @@ from aiogram.utils.keyboard import ReplyKeyboardBuilder
 from bs4 import BeautifulSoup
 from aiogram.client.default import DefaultBotProperties
 from dotenv import load_dotenv
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 
 # ------------------ ЗАГРУЗКА .ENV ------------------
 load_dotenv()
@@ -528,15 +528,18 @@ async def send_doctors_list(message, spec_slug, spec_name, keyboard_to_keep=None
         else:
             phone_text = doc['phone']
 
-        # Создаем инлайн-клавиатуру с кнопкой "Открыть карточку"
-        keyboard = None
-        if doc.get('link'):
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="📋 Открыть карточку врача", url=doc['link'])]
-            ])
-            logger.info(f"Добавляем кнопку для врача {doc['name']}: {doc['link']}")
-        else:
-            logger.warning(f"Нет ссылки для врача {doc['name']}")
+        # Создаем Web App кнопку вместо обычной URL кнопки
+keyboard = None
+if doc.get('link'):
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="📋 Открыть карточку врача", 
+            web_app=types.WebAppInfo(url=doc['link'])
+        )]
+    ])
+    logger.info(f"Добавляем Web App кнопку для врача {doc['name']}: {doc['link']}")
+else:
+    logger.warning(f"Нет ссылки для врача {doc['name']}")
 
         caption = (
             f"<b>{idx}. {doc['name']}</b> (⭐ {doc['rating']})\n"
