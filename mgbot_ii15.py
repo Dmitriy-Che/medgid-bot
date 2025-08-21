@@ -16,7 +16,7 @@ from aiogram.utils.keyboard import ReplyKeyboardBuilder
 from bs4 import BeautifulSoup
 from aiogram.client.default import DefaultBotProperties
 from dotenv import load_dotenv
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 
 # ------------------ ЗАГРУЗКА .ENV ------------------
 load_dotenv()
@@ -26,9 +26,11 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 YANDEX_FOLDER_ID = os.getenv("YANDEX_FOLDER_ID")
 YANDEX_API_KEY = os.getenv("YANDEX_API_KEY")
 CACHE_FILE = "doctors_cache.json"
+USERS_FILE = "bot_users.json"
 CACHE_EXPIRE_HOURS = 3
 MAX_DOCTORS = 5
 LOG_FILE = "logs.txt"
+ADMIN_ID = 461119006  # Ваш CHAT_ID
 
 if not BOT_TOKEN:
     raise ValueError("❌ BOT_TOKEN не найден. Добавь его в переменные окружения или .env")
@@ -48,6 +50,37 @@ def log_interaction(user: types.User, user_input: str, bot_response: str):
                 f"{user.full_name} (id={user.id})\n"
                 f"  ➤ Запрос: {user_input}\n"
                 f"  ➤ Ответ: {bot_response}\n\n")
+
+# ------------------ УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ ------------------
+def load_users():
+    """Загружаем список пользователей"""
+    if os.path.exists(USERS_FILE):
+        try:
+            with open(USERS_FILE, "r", encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            return []
+    return []
+
+def save_user(user_id: int, username: str, first_name: str, last_name: str = ""):
+    """Сохраняем пользователя"""
+    users = load_users()
+    
+    # Проверяем, есть ли уже пользователь
+    user_exists = any(user['id'] == user_id for user in users)
+    
+    if not user_exists:
+        users.append({
+            "id": user_id,
+            "username": username,
+            "first_name": first_name,
+            "last_name": last_name,
+            "joined_date": datetime.now().isoformat()
+        })
+        
+        with open(USERS_FILE, "w", encoding='utf-8') as f:
+            json.dump(users, f, ensure_ascii=False, indent=2)
+        logger.info(f"Новый пользователь: {username} (id={user_id})")
 
 # ------------------ СПЕЦИАЛИЗАЦИИ И СЛУЖЕБНЫЕ ФУНКЦИИ ------------------
 SPECIALIZATIONS = {
@@ -141,23 +174,9 @@ async def ask_yandex_gpt(symptoms: str):
         "Content-Type": "application/json"
     }
     
-    # Улучшенный промпт
     prompt = f"""
 Ты опытный медицинский консультант. Проанализируй симптомы и предложи наиболее подходящих специалистов из этого списка:
 {", ".join(SPECIALIZATIONS.keys())}
-
-ВОЗМОЖНЫЕ СПЕЦИАЛИСТЫ ДЛЯ РЕКОМЕНДАЦИИ:
-- При головной боли, головокружении, проблемах с памятью → Невролог
-- При боли в сердце, давлении, аритмии → Кардиолог  
-- При кашле, одышке, проблемах с дыханием → Пульмонолог
-- При боли в животе, тошноте, проблемах с ЖКТ → Гастроэнтеролог или Терапевт
-- При проблемах с кожей, сыпи, зуде → Дерматолог
-- При боли в суставах, мышцах, травмах → Травматолог или Ортопед
-- При проблемах со зрением → Офтальмолог
-- При женских проблемах → Гинеколог
-- При мужских проблемах → Уролог
-- При гормональных нарушениях → Эндокринолог
-- При общих симптомах (температура, слабость) → Терапевт
 
 Формат ответа ДОЛЖЕН БЫТЬ ТОЧНО ТАКИМ:
 Диагноз: [краткое описание возможного заболевания]. Специалисты: [Специалист1], [Специалист2]
@@ -175,16 +194,11 @@ async def ask_yandex_gpt(symptoms: str):
         async with aiohttp.ClientSession() as session:
             async with session.post(url, headers=headers, json=payload, timeout=30) as resp:
                 if resp.status != 200:
-                    error_text = await resp.text()
-                    logger.error(f"Ошибка YandexGPT (status {resp.status}): {error_text}")
                     return "Ошибка: Не удалось получить рекомендации."
                 
                 data = await resp.json()
                 return data["result"]["alternatives"][0]["message"]["text"]
                 
-    except asyncio.TimeoutError:
-        logger.error("Таймаут запроса к YandexGPT")
-        return "Ошибка: Время запроса истекло."
     except Exception as e:
         logger.error(f"Ошибка YandexGPT: {e}")
         return "Ошибка сервиса."
@@ -202,7 +216,6 @@ async def scrape_doctors(specialization_slug, chat_id, max_count=MAX_DOCTORS):
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'ru-RU,ru;q=0.8,en-US;q=0.5,en;q=0.3',
         }
 
         await update_progress(progress_msg, 20)
@@ -247,14 +260,11 @@ async def scrape_doctors(specialization_slug, chat_id, max_count=MAX_DOCTORS):
                 name_elem = card.select_one('span.b-doctor-card__name-surname')
                 name = name_elem.get_text(strip=True) if name_elem else "Не указано"
 
-                # НАХОДИМ ССЫЛКУ НА ВРАЧА - ПРАВИЛЬНЫЙ СЕЛЕКТОР
                 doctor_link = None
-                # Пробуем разные селекторы для ссылки
                 link_selectors = [
                     'a.b-doctor-card__name',
                     'a[href*="/doctor/"]',
                     'a.b-doctor-card__link',
-                    'a.b-profile-card__name'
                 ]
                 
                 for selector in link_selectors:
@@ -267,7 +277,6 @@ async def scrape_doctors(specialization_slug, chat_id, max_count=MAX_DOCTORS):
                             doctor_link = href
                         break
                 
-                # Если не нашли ссылку, пробуем найти любую ссылку в карточке
                 if not doctor_link:
                     any_link = card.select_one('a[href]')
                     if any_link and any_link.get('href'):
@@ -330,7 +339,7 @@ async def scrape_doctors(specialization_slug, chat_id, max_count=MAX_DOCTORS):
 
                 doctors.append({
                     'name': name,
-                    'link': doctor_link,  # ДОБАВЛЯЕМ ССЫЛКУ
+                    'link': doctor_link,
                     'rating': rating,
                     'photo': photo,
                     'experience': experience,
@@ -354,10 +363,6 @@ async def scrape_doctors(specialization_slug, chat_id, max_count=MAX_DOCTORS):
             await progress_msg.delete()
 
         logger.info(f"Найдено {len(doctors)} врачей для {specialization_slug}")
-        # Логируем найденные ссылки для отладки
-        for i, doc in enumerate(doctors):
-            logger.info(f"Врач {i+1}: {doc['name']}, ссылка: {doc.get('link', 'Нет ссылки')}")
-        
         return doctors
 
     except Exception as e:
@@ -379,14 +384,84 @@ class Form(StatesGroup):
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
 
-# Обработчик для кнопок специалистов
+# ------------------ РАССЫЛКА ------------------
+async def broadcast_message(message_text: str, photo_path: str = None):
+    """Отправка рассылки всем пользователям"""
+    users = load_users()
+    successful = 0
+    failed = 0
+    
+    for user in users:
+        try:
+            if photo_path and os.path.exists(photo_path):
+                with open(photo_path, "rb") as photo:
+                    await bot.send_photo(
+                        chat_id=user['id'],
+                        photo=photo,
+                        caption=message_text,
+                        parse_mode="HTML"
+                    )
+            else:
+                await bot.send_message(
+                    chat_id=user['id'],
+                    text=message_text,
+                    parse_mode="HTML"
+                )
+            successful += 1
+            await asyncio.sleep(0.1)
+        except Exception as e:
+            logger.error(f"Ошибка отправки пользователю {user['id']}: {e}")
+            failed += 1
+            continue
+    
+    return successful, failed
+
+@dp.message(Command("broadcast"))
+async def cmd_broadcast(message: types.Message):
+    """Команда для рассылки (только для админа)"""
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("❌ Эта команда только для администратора")
+        return
+    
+    if len(message.text.split()) < 2:
+        await message.answer("❌ Формат: /broadcast текст сообщения")
+        return
+    
+    broadcast_text = message.text.split(maxsplit=1)[1]
+    users_count = len(load_users())
+    
+    await message.answer(f"📤 Начинаю рассылку для {users_count} пользователей...")
+    
+    successful, failed = await broadcast_message(broadcast_text)
+    
+    await message.answer(
+        f"✅ Рассылка завершена!\n"
+        f"✔️ Успешно: {successful}\n"
+        f"❌ Не удалось: {failed}"
+    )
+
+@dp.message(Command("stats"))
+async def cmd_stats(message: types.Message):
+    """Статистика пользователей"""
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("❌ Эта команда только для администратора")
+        return
+    
+    users = load_users()
+    await message.answer(
+        f"📊 Статистика бота:\n"
+        f"👥 Всего пользователей: {len(users)}\n"
+        f"📅 Последние 7 дней: {len([u for u in users if datetime.fromisoformat(u['joined_date']) > datetime.now() - timedelta(days=7)])}\n"
+        f"🆕 Сегодня: {len([u for u in users if datetime.fromisoformat(u['joined_date']).date() == datetime.now().date()])}"
+    )
+
+# ------------------ ОСНОВНЫЕ ОБРАБОТЧИКИ ------------------
 @dp.message(F.text.in_(SPECIALIZATIONS.keys()))
 async def handle_doctor_choice(message: types.Message, state: FSMContext):
     logger.info(f"Выбор специалиста: {message.text}")
     spec_name = message.text
     spec_slug = SPECIALIZATIONS[spec_name]
     
-    # Проверяем, есть ли состояние ожидания выбора рекомендованного специалиста
     current_state = await state.get_state()
     if current_state == Form.waiting_for_specialist_choice:
         user_data = await state.get_data()
@@ -399,6 +474,15 @@ async def handle_doctor_choice(message: types.Message, state: FSMContext):
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
+    
+    # Сохраняем пользователя
+    save_user(
+        user_id=message.from_user.id,
+        username=message.from_user.username or "",
+        first_name=message.from_user.first_name,
+        last_name=message.from_user.last_name or ""
+    )
+    
     caption = (
         "👋 Добро пожаловать в <b>МедГид – Домодедово!</b> 🩺\n\n"
         "Что я умею:\n"
@@ -444,12 +528,10 @@ async def handle_symptoms(message: types.Message, state: FSMContext):
         await state.clear()
         return
 
-    # Парсим ответ YandexGPT
     diagnosis = "неопределенное состояние"
-    specialists = ["Терапевт"]  # по умолчанию
+    specialists = ["Терапевт"]
     
     try:
-        # Ищем паттерн в ответе
         if "Диагноз:" in yandex_response and "Специалисты:" in yandex_response:
             parts = yandex_response.split("Специалисты:")
             if len(parts) >= 2:
@@ -458,7 +540,6 @@ async def handle_symptoms(message: types.Message, state: FSMContext):
                 
                 diagnosis = diagnosis_part.split(".")[0] if diagnosis_part else "неопределенное состояние"
                 
-                # Извлекаем специалистов
                 specialists = []
                 for spec in SPECIALIZATIONS.keys():
                     if spec.lower() in specialists_part.lower():
@@ -467,7 +548,6 @@ async def handle_symptoms(message: types.Message, state: FSMContext):
                 if not specialists:
                     specialists = ["Терапевт"]
         else:
-            # Альтернативный парсинг
             for spec in SPECIALIZATIONS.keys():
                 if spec.lower() in yandex_response.lower():
                     specialists.append(spec)
@@ -495,7 +575,6 @@ async def handle_symptoms(message: types.Message, state: FSMContext):
     )
     await state.set_state(Form.waiting_for_specialist_choice)
 
-# Обработчик любого другого текста
 @dp.message()
 async def handle_unknown_message(message: types.Message):
     await message.answer("Пожалуйста, используйте кнопки меню для навигации.", reply_markup=get_start_keyboard())
@@ -528,15 +607,14 @@ async def send_doctors_list(message, spec_slug, spec_name, keyboard_to_keep=None
         else:
             phone_text = doc['phone']
 
-        # Создаем инлайн-клавиатуру с кнопкой "Открыть карточку"
         keyboard = None
         if doc.get('link'):
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="📋 Открыть карточку врача", url=doc['link'])]
+                [InlineKeyboardButton(
+                    text="📋 Открыть карточку врача", 
+                    web_app=types.WebAppInfo(url=doc['link'])
+                )]
             ])
-            logger.info(f"Добавляем кнопку для врача {doc['name']}: {doc['link']}")
-        else:
-            logger.warning(f"Нет ссылки для врача {doc['name']}")
 
         caption = (
             f"<b>{idx}. {doc['name']}</b> (⭐ {doc['rating']})\n"
@@ -554,14 +632,14 @@ async def send_doctors_list(message, spec_slug, spec_name, keyboard_to_keep=None
                     photo=doc['photo'], 
                     caption=caption, 
                     parse_mode="HTML",
-                    reply_markup=keyboard  # Добавляем клавиатуру
+                    reply_markup=keyboard
                 )
             else:
                 await bot.send_message(
                     message.chat.id, 
                     text=caption, 
                     parse_mode="HTML",
-                    reply_markup=keyboard  # Добавляем клавиатуру
+                    reply_markup=keyboard
                 )
         except Exception as e:
             logger.error(f"Ошибка отправки: {e}")
@@ -573,16 +651,12 @@ async def send_doctors_list(message, spec_slug, spec_name, keyboard_to_keep=None
                 f"Приём: {doc['price']}\n"
                 f"Телефон: {doc['phone']}"
             )
-            await bot.send_message(
-                message.chat.id, 
-                text=plain_text,
-                reply_markup=keyboard  # Добавляем клавиатуру
-            )
+            await bot.send_message(message.chat.id, text=plain_text, reply_markup=keyboard)
 
     if keyboard_to_keep:
-        await message.answer("✅ Готово! Нажмите на кнопку 'Открыть карточку врача' под каждым врачом для просмотра подробной информации.", reply_markup=keyboard_to_keep)
+        await message.answer("✅ Готово! Нажмите на кнопку под каждым врачом для просмотра подробной информации.", reply_markup=keyboard_to_keep)
     else:
-        await message.answer("✅ Готово! Нажмите на кнопку 'Открыть карточку врача' под каждым врачом для просмотра подробной информации.", reply_markup=get_back_to_menu_keyboard())
+        await message.answer("✅ Готово! Нажмите на кнопку под каждым врачом для просмотра подробной информации.", reply_markup=get_back_to_menu_keyboard())
 
 # ------------------ ЗАПУСК ------------------
 async def main():
