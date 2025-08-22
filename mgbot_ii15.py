@@ -25,11 +25,14 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 YANDEX_FOLDER_ID = os.getenv("YANDEX_FOLDER_ID")
 YANDEX_API_KEY = os.getenv("YANDEX_API_KEY")
-CACHE_FILE = "doctors_cache.json"
-USERS_FILE = "bot_users.json"
+
+# ИСПРАВЛЕНИЕ: Сохраняем файлы в /tmp/ где есть права на запись
+CACHE_FILE = "/tmp/doctors_cache.json"
+USERS_FILE = "/tmp/bot_users.json"
+LOG_FILE = "/tmp/logs.txt"
+
 CACHE_EXPIRE_HOURS = 3
 MAX_DOCTORS = 5
-LOG_FILE = "logs.txt"
 ADMIN_ID = 461119006  # Ваш CHAT_ID
 
 if not BOT_TOKEN:
@@ -45,42 +48,62 @@ logger = logging.getLogger(__name__)
 
 def log_interaction(user: types.User, user_input: str, bot_response: str):
     """Записываем взаимодействие в файл"""
-    with open(LOG_FILE, "a", encoding="utf-8") as f:
-        f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] "
-                f"{user.full_name} (id={user.id})\n"
-                f"  ➤ Запрос: {user_input}\n"
-                f"  ➤ Ответ: {bot_response}\n\n")
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] "
+                    f"{user.full_name} (id={user.id})\n"
+                    f"  ➤ Запрос: {user_input}\n"
+                    f"  ➤ Ответ: {bot_response}\n\n")
+    except Exception as e:
+        logger.error(f"Ошибка записи лога: {e}")
 
 # ------------------ УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ ------------------
 def load_users():
     """Загружаем список пользователей"""
-    if os.path.exists(USERS_FILE):
-        try:
+    try:
+        if os.path.exists(USERS_FILE):
             with open(USERS_FILE, "r", encoding='utf-8') as f:
                 return json.load(f)
-        except:
-            return []
-    return []
+        return []
+    except Exception as e:
+        logger.error(f"Ошибка загрузки пользователей: {e}")
+        return []
 
 def save_user(user_id: int, username: str, first_name: str, last_name: str = ""):
-    """Сохраняем пользователя"""
-    users = load_users()
-    
-    # Проверяем, есть ли уже пользователь
-    user_exists = any(user['id'] == user_id for user in users)
-    
-    if not user_exists:
-        users.append({
-            "id": user_id,
-            "username": username,
-            "first_name": first_name,
-            "last_name": last_name,
-            "joined_date": datetime.now().isoformat()
-        })
+    """Сохраняем пользователя с улучшенным логированием"""
+    try:
+        users = load_users()
         
-        with open(USERS_FILE, "w", encoding='utf-8') as f:
-            json.dump(users, f, ensure_ascii=False, indent=2)
-        logger.info(f"Новый пользователь: {username} (id={user_id})")
+        # Проверяем, есть ли уже пользователь
+        user_exists = any(user['id'] == user_id for user in users)
+        
+        if not user_exists:
+            new_user = {
+                "id": user_id,
+                "username": username,
+                "first_name": first_name,
+                "last_name": last_name,
+                "joined_date": datetime.now().isoformat()
+            }
+            users.append(new_user)
+            
+            # Пытаемся записать в файл
+            try:
+                with open(USERS_FILE, "w", encoding='utf-8') as f:
+                    json.dump(users, f, ensure_ascii=False, indent=2)
+                logger.info(f"✅ Пользователь сохранен в файл: {username} (id={user_id})")
+                logger.info(f"✅ Всего пользователей: {len(users)}")
+                return True
+            except Exception as e:
+                logger.error(f"❌ Ошибка записи в файл {USERS_FILE}: {e}")
+                return False
+        else:
+            logger.info(f"ℹ️ Пользователь уже существует: {username} (id={user_id})")
+            return True
+            
+    except Exception as e:
+        logger.error(f"❌ Критическая ошибка в save_user: {e}")
+        return False
 
 # ------------------ СПЕЦИАЛИЗАЦИИ И СЛУЖЕБНЫЕ ФУНКЦИИ ------------------
 SPECIALIZATIONS = {
@@ -133,18 +156,21 @@ def get_back_to_menu_keyboard():
     return builder.as_markup(resize_keyboard=True)
 
 def load_cache():
-    if os.path.exists(CACHE_FILE):
-        try:
+    try:
+        if os.path.exists(CACHE_FILE):
             with open(CACHE_FILE, "r", encoding='utf-8') as f:
                 return json.load(f)
-        except Exception as e:
-            logger.warning(f"Ошибка чтения кэша: {e}")
-            return {}
-    return {}
+        return {}
+    except Exception as e:
+        logger.error(f"Ошибка чтения кэша: {e}")
+        return {}
 
 def save_cache(cache):
-    with open(CACHE_FILE, "w", encoding='utf-8') as f:
-        json.dump(cache, f, ensure_ascii=False, indent=2)
+    try:
+        with open(CACHE_FILE, "w", encoding='utf-8') as f:
+            json.dump(cache, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"Ошибка сохранения кэша: {e}")
 
 async def get_cached_doctors(spec_slug):
     cache = load_cache()
@@ -428,7 +454,8 @@ async def cmd_broadcast(message: types.Message):
         return
     
     broadcast_text = message.text.split(maxsplit=1)[1]
-    users_count = len(load_users())
+    users = load_users()
+    users_count = len(users)
     
     await message.answer(f"📤 Начинаю рассылку для {users_count} пользователей...")
     
@@ -437,7 +464,8 @@ async def cmd_broadcast(message: types.Message):
     await message.answer(
         f"✅ Рассылка завершена!\n"
         f"✔️ Успешно: {successful}\n"
-        f"❌ Не удалось: {failed}"
+        f"❌ Не удалось: {failed}\n"
+        f"📊 Всего в базе: {users_count}"
     )
 
 @dp.message(Command("stats"))
@@ -448,12 +476,21 @@ async def cmd_stats(message: types.Message):
         return
     
     users = load_users()
-    await message.answer(
+    file_exists = os.path.exists(USERS_FILE)
+    file_size = os.path.getsize(USERS_FILE) if file_exists else 0
+    
+    stats_text = (
         f"📊 Статистика бота:\n"
         f"👥 Всего пользователей: {len(users)}\n"
         f"📅 Последние 7 дней: {len([u for u in users if datetime.fromisoformat(u['joined_date']) > datetime.now() - timedelta(days=7)])}\n"
-        f"🆕 Сегодня: {len([u for u in users if datetime.fromisoformat(u['joined_date']).date() == datetime.now().date()])}"
+        f"🆕 Сегодня: {len([u for u in users if datetime.fromisoformat(u['joined_date']).date() == datetime.now().date()])}\n\n"
+        f"🔧 Диагностика:\n"
+        f"📁 Файл существует: {'✅' if file_exists else '❌'}\n"
+        f"📏 Размер файла: {file_size} байт\n"
+        f"📍 Путь: {USERS_FILE}"
     )
+    
+    await message.answer(stats_text)
 
 # ------------------ ОСНОВНЫЕ ОБРАБОТЧИКИ ------------------
 @dp.message(F.text.in_(SPECIALIZATIONS.keys()))
@@ -476,12 +513,15 @@ async def cmd_start(message: types.Message, state: FSMContext):
     await state.clear()
     
     # Сохраняем пользователя
-    save_user(
+    success = save_user(
         user_id=message.from_user.id,
         username=message.from_user.username or "",
         first_name=message.from_user.first_name,
         last_name=message.from_user.last_name or ""
     )
+    
+    if not success:
+        logger.error("❌ Не удалось сохранить пользователя!")
     
     caption = (
         "👋 Добро пожаловать в <b>МедГид – Домодедово!</b> 🩺\n\n"
@@ -660,7 +700,24 @@ async def send_doctors_list(message, spec_slug, spec_name, keyboard_to_keep=None
 
 # ------------------ ЗАПУСК ------------------
 async def main():
+    # Диагностика при запуске
     logger.info("🚀 Бот запущен...")
+    logger.info(f"Текущая директория: {os.getcwd()}")
+    logger.info(f"Путь к файлу пользователей: {USERS_FILE}")
+    
+    # Проверяем доступность файлов
+    for file_path in [USERS_FILE, CACHE_FILE]:
+        try:
+            if not os.path.exists(file_path):
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    initial_data = [] if 'users' in file_path else {}
+                    json.dump(initial_data, f, ensure_ascii=False)
+                logger.info(f"Создан файл: {file_path}")
+            else:
+                logger.info(f"Файл существует: {file_path} ({os.path.getsize(file_path)} байт)")
+        except Exception as e:
+            logger.error(f"Ошибка работы с файлом {file_path}: {e}")
+    
     await dp.start_polling(bot, skip_updates=True)
 
 if __name__ == "__main__":
