@@ -410,15 +410,20 @@ class Form(StatesGroup):
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
 
-# ------------------ РАССЫЛКА ------------------
+# ------------------ РАССЫЛКА (ИСПРАВЛЕННАЯ) ------------------
 async def broadcast_message(message_text: str, photo_path: str = None):
-    """Отправка рассылки всем пользователям"""
+    """Отправка рассылки всем пользователям с детальным логированием"""
     users = load_users()
     successful = 0
     failed = 0
+    failed_users = []
+    
+    logger.info(f"Начинаем рассылку для {len(users)} пользователей")
     
     for user in users:
         try:
+            logger.info(f"Пытаемся отправить пользователю {user['username']} (id={user['id']})")
+            
             if photo_path and os.path.exists(photo_path):
                 with open(photo_path, "rb") as photo:
                     await bot.send_photo(
@@ -434,13 +439,23 @@ async def broadcast_message(message_text: str, photo_path: str = None):
                     parse_mode="HTML"
                 )
             successful += 1
-            await asyncio.sleep(0.1)
+            logger.info(f"✅ Отправлено пользователю {user['username']}")
+            
+            await asyncio.sleep(0.1)  # Чтобы не спамить Telegram API
+            
         except Exception as e:
-            logger.error(f"Ошибка отправки пользователю {user['id']}: {e}")
+            logger.error(f"❌ Ошибка отправки пользователю {user['id']}: {e}")
             failed += 1
+            failed_users.append({"id": user['id'], "username": user['username'], "error": str(e)})
             continue
     
-    return successful, failed
+    # Детальный отчет об ошибках
+    if failed_users:
+        logger.error("Не удалось отправить следующим пользователям:")
+        for failed_user in failed_users:
+            logger.error(f"  - {failed_user['username']} (id={failed_user['id']}): {failed_user['error']}")
+    
+    return successful, failed, failed_users
 
 @dp.message(Command("broadcast"))
 async def cmd_broadcast(message: types.Message):
@@ -459,14 +474,51 @@ async def cmd_broadcast(message: types.Message):
     
     await message.answer(f"📤 Начинаю рассылку для {users_count} пользователей...")
     
-    successful, failed = await broadcast_message(broadcast_text)
+    successful, failed, failed_users = await broadcast_message(broadcast_text)
     
-    await message.answer(
+    # Детальный отчет
+    report = (
         f"✅ Рассылка завершена!\n"
         f"✔️ Успешно: {successful}\n"
         f"❌ Не удалось: {failed}\n"
-        f"📊 Всего в базе: {users_count}"
+        f"📊 Всего в базе: {users_count}\n"
     )
+    
+    # Добавляем информацию о неудачных отправках
+    if failed_users:
+        report += "\n❌ Не удалось отправить:\n"
+        for user in failed_users:
+            report += f"• {user['username']} (id={user['id']})\n"
+    
+    await message.answer(report)
+
+@dp.message(Command("check_users"))
+async def cmd_check_users(message: types.Message):
+    """Проверить статус пользователей"""
+    if message.from_user.id != ADMIN_ID:
+        return
+        
+    users = load_users()
+    
+    if not users:
+        await message.answer("📭 В базе нет пользователей")
+        return
+    
+    report = "📋 Текущие пользователи:\n\n"
+    
+    for user in users:
+        # Пытаемся отправить test message чтобы проверить доступность
+        try:
+            await bot.send_message(user['id'], "🤖 Проверка связи...")
+            status = "✅ Активен"
+        except Exception as e:
+            status = f"❌ Заблокирован/ошибка: {str(e)}"
+        
+        report += f"👤 {user['username']} (id={user['id']})\n"
+        report += f"   Статус: {status}\n"
+        report += f"   Зарегистрирован: {user['joined_date'][:10]}\n\n"
+    
+    await message.answer(report)
 
 @dp.message(Command("stats"))
 async def cmd_stats(message: types.Message):
@@ -698,6 +750,19 @@ async def send_doctors_list(message, spec_slug, spec_name, keyboard_to_keep=None
     else:
         await message.answer("✅ Готово! Нажмите на кнопку под каждым врачом для просмотра подробной информации.", reply_markup=get_back_to_menu_keyboard())
 
+# ------------------ KEEP-ALIVE МЕХАНИЗМ ------------------
+async def keep_alive():
+    """Периодическая активность чтобы бот не 'засыпал'"""
+    while True:
+        try:
+            # Просто логируем что бот жив
+            logger.info("🤖 Бот активен...")
+            # Можно также периодически сохранять кэш или делать другую легкую работу
+            await asyncio.sleep(300)  # Каждые 5 минут
+        except Exception as e:
+            logger.error(f"Ошибка в keep-alive: {e}")
+            await asyncio.sleep(60)
+
 # ------------------ ЗАПУСК ------------------
 async def main():
     # Диагностика при запуске
@@ -717,6 +782,9 @@ async def main():
                 logger.info(f"Файл существует: {file_path} ({os.path.getsize(file_path)} байт)")
         except Exception as e:
             logger.error(f"Ошибка работы с файлом {file_path}: {e}")
+    
+    # Запускаем keep-alive в фоне
+    asyncio.create_task(keep_alive())
     
     await dp.start_polling(bot, skip_updates=True)
 
